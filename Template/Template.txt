@@ -1,0 +1,149 @@
+
+// © 1zerolog
+//@version=6
+strategy(title = "TEMPLATE", overlay = true, currency = 'USD', commission_value = 0.1,
+ commission_type = strategy.commission.percent, default_qty_type = strategy.percent_of_equity,
+ margin_long=0, margin_short=0,
+ default_qty_value = 10, initial_capital = 100)
+ //──────────── |🆔 AÇIKLAMA ALANLARI |─────────────────────────────
+L_OPEN_ID    = input.string(defval = "L_OPEN_ID_", title = "L_OPEN_ID_", inline = "1", group="ID")
+L_CLOSE_ID   = input.string(defval = "L_CLOSE_ID", title = "L_CLOSE_ID", inline = "1", group="ID")
+S_OPEN_ID    = input.string(defval = "S_OPEN_ID_", title = "S_OPEN_ID_", inline = "2", group="ID")
+S_CLOSE_ID   = input.string(defval = "S_CLOSE_ID", title = "S_CLOSE_ID", inline = "2", group="ID")
+//───────────--- ⏱ ZAMAN FİLTRESİ---─────────────────────────────
+use_Time = input.bool(false, title = 'Backtest')
+i_startTime = input.time(timestamp('01 Jun 2026 00:01 +0300'), title = '🟢Start🟢')
+i_endTime = input.time(timestamp('30 Dec 2026 00:01 +0300'), title = '❌End❌')
+inDateRange = use_Time ? time >= i_startTime and time <= i_endTime : true
+
+//───────────--- LEVERAGE---─────────────────────────────
+var equity_percentage = input.int(33, title='(%)', minval=1, maxval=100, step=1,inline = "1", group="🚀LEVERAGE🚀")
+var leverage = input.int(11, title='(X)📡', minval=1, maxval=100, step=1, inline="1", group="🚀LEVERAGE🚀")
+var float Lev = na
+Lev := math.max(math.round(strategy.equity * leverage * equity_percentage / 100 / close), 0)
+//──────────────────---Trend_Seçimi---───────────────────
+takeLong = input(true, title="Enter Long Position",group="General")
+takeShort = input(true, title="Enter Short Position",group="General")
+// # ==============================  |   TREND-STRATEGY  |=================================== #
+
+// # ==============================  |   MAİN-STRATEGY  |=================================== #
+
+
+// # ==============================  |   FİNAL_CONDITIONS  |=================================== #
+
+enterLong  =
+enterShort =
+
+// # ===================== | STRATEGY BEGİNNER  |=========================
+if enterLong and inDateRange and takeLong
+    strategy.entry(id = 'L', direction = strategy.long, qty = Lev, comment = L_OPEN_ID)
+if enterShort and inDateRange and takeShort
+    strategy.entry(id = 'S', direction = strategy.short, qty = Lev, comment = S_OPEN_ID)
+tpPct    = input.float(4.8, "TP %", step=0.5)
+slPct    = input.float(5.0, "SL % (0=kapalı)", step=0.5)
+// ==== Pozisyon durumu
+inLong   = strategy.position_size > 0
+inShort  = strategy.position_size < 0
+avgPrice = strategy.position_avg_price
+
+// Pyramiding/ilk giriş tespiti
+newLong   = inLong  and strategy.position_size[1] <= 0
+newShort  = inShort and strategy.position_size[1] >= 0
+pyrLong   = inLong  and strategy.position_size != strategy.position_size[1]
+pyrShort  = inShort and strategy.position_size != strategy.position_size[1]
+
+// ==== Hedefler (ortalama fiyata göre)
+longTP   = inLong  ? avgPrice * (1 + tpPct/100.0) : na
+shortTP  = inShort ? avgPrice * (1 - tpPct/100.0) : na
+longSL   = slPct > 0 and inLong  ? avgPrice * (1 - slPct/100.0) : na
+shortSL  = slPct > 0 and inShort ? avgPrice * (1 + slPct/100.0) : na
+
+// ==== Tek seferlik close için latch bayrakları
+var bool lArmed  = false
+var bool sArmed  = false
+var bool lClosed = false
+var bool sClosed = false
+
+// Pozisyon açıldığında/ekleme olduğunda tetiklemeyi yeniden hazırla
+if newLong or pyrLong
+    lArmed  := true
+    lClosed := false
+if newShort or pyrShort
+    sArmed  := true
+    sClosed := false
+
+// TP/SL dokunma (intrabar)
+longHitTP  = inLong  and lArmed and high >= longTP
+longHitSL  = inLong  and lArmed and slPct > 0 and low  <= longSL
+shortHitTP = inShort and sArmed and low  <= shortTP
+shortHitSL = inShort and sArmed and slPct > 0 and high >= shortSL
+
+// ---- Sadece 1 kez market close gönder
+if (longHitTP or longHitSL) and not lClosed
+    strategy.close("L", longHitTP ? "TP" : "SL")
+    lClosed := true
+    lArmed  := false
+
+if (shortHitTP or shortHitSL) and not sClosed
+    strategy.close("S", shortHitTP ? "TP" : "SL")
+    sClosed := true
+    sArmed  := false
+
+// Pozisyon tamamen kapanınca state sıfırla
+if not inLong
+    lArmed := false, lClosed := false
+if not inShort
+    sArmed := false, sClosed := false
+
+var tral_g = '[ Close_Trailing_Stoploss_SETTING ]'
+inTrail  = input.bool(title = '[ON_OFF]', defval = true, group = tral_g)
+tPointIn = input.float(title = 'Trail Point  %', step = 0.1, defval = 2, group = tral_g)
+tOffsetIn = input.float(title = 'Trail Offset %', step = 0.1, defval = 0.1, group = tral_g)
+
+var float longTrailStop = na
+var float shortTrailStop = na
+var bool longTrailActive = false
+var bool shortTrailActive = false
+// LONG trailing close
+if strategy.position_size > 0
+    xtrailx = strategy.position_avg_price / syminfo.mintick
+    tPoint  = tPointIn * 0.01 * xtrailx * syminfo.mintick
+    tOffset = tOffsetIn * 0.01 * xtrailx * syminfo.mintick
+
+    activateLongPrice = strategy.position_avg_price + tPoint
+
+    if inTrail
+        if not longTrailActive and high >= activateLongPrice
+            longTrailActive := true
+            longTrailStop := high - tOffset
+
+        if longTrailActive
+            longTrailStop := math.max(longTrailStop, high - tOffset)
+
+        if longTrailActive and low <= longTrailStop
+            strategy.close(id = 'L', comment = L_CLOSE_ID)
+else
+    longTrailStop := na
+    longTrailActive := false
+
+// SHORT trailing close
+if strategy.position_size < 0
+    xtrailx = strategy.position_avg_price / syminfo.mintick
+    tPoint  = tPointIn * 0.01 * xtrailx * syminfo.mintick
+    tOffset = tOffsetIn * 0.01 * xtrailx * syminfo.mintick
+
+    activateShortPrice = strategy.position_avg_price - tPoint
+
+    if inTrail
+        if not shortTrailActive and low <= activateShortPrice
+            shortTrailActive := true
+            shortTrailStop := low + tOffset
+
+        if shortTrailActive
+            shortTrailStop := math.min(shortTrailStop, low + tOffset)
+
+        if shortTrailActive and high >= shortTrailStop
+            strategy.close(id = 'S', comment = S_CLOSE_ID)
+else
+    shortTrailStop := na
+    shortTrailActive := false
